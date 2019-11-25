@@ -1,21 +1,13 @@
 #include <iostream>
-#include "IOCPServer.h"
+#include "ChatServer.h"
 
 const unsigned short SERVER_PORT = 11021;
 
 int main() {
-	IOCPServer iocp_server;
-	ErrorCode error_code;
+    ChatServer chat_server;
 
-	if((error_code = iocp_server.InitSocket(SERVER_PORT)) != ErrorCode::NONE)
-	{
-		std::cout << "Error: " << (unsigned short) error_code << ", " << WSAGetLastError() << std::endl;
-	}
+    chat_server.InitServer(SERVER_PORT);
+    chat_server.StartServer();
 
-	if((error_code = iocp_server.StartServer()) != ErrorCode::NONE)
-	{
-		std::cout << "Error: " << (unsigned short) error_code << ", " << WSAGetLastError() << std::endl;
-	}
-
-	return 0;
+    return 0;
 }
