@@ -26,7 +26,6 @@ struct ClientInfo
     SOCKET client_socket;
     SOCKADDR_IN client_addr;
     OverlappedData recv_overlapped_data;
-    OverlappedData send_overlapped_data;
     int client_index;
 };
 

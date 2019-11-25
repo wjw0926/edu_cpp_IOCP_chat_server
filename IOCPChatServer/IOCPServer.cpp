@@ -135,13 +135,15 @@ ErrorCode IOCPServer::AsyncRecv(ClientInfo * client_info)
 
 ErrorCode IOCPServer::AsyncSend(ClientInfo * client_info, char * buf, int size)
 {
-    memset(&client_info->send_overlapped_data.overlapped, 0, sizeof(WSAOVERLAPPED));
-    memcpy(client_info->send_overlapped_data.buf, buf, size);
-    client_info->send_overlapped_data.wsabuf.len = size;
-    client_info->send_overlapped_data.wsabuf.buf = client_info->send_overlapped_data.buf;
-    client_info->send_overlapped_data.io_operation = IOOperation::SEND;
+    OverlappedData * send_overlapped_data = new OverlappedData;
+
+    memset(send_overlapped_data, 0, sizeof(OverlappedData));
+    memcpy(send_overlapped_data->buf, buf, size);
+    send_overlapped_data->wsabuf.len = size;
+    send_overlapped_data->wsabuf.buf = send_overlapped_data->buf;
+    send_overlapped_data->io_operation = IOOperation::SEND;
         
-    if(WSASend(client_info->client_socket, &(client_info->send_overlapped_data.wsabuf), 1, NULL, 0, (LPWSAOVERLAPPED) &(client_info->send_overlapped_data), NULL) == SOCKET_ERROR && WSAGetLastError() != WSA_IO_PENDING)
+    if(WSASend(client_info->client_socket, &send_overlapped_data->wsabuf, 1, NULL, 0, (LPWSAOVERLAPPED) send_overlapped_data, NULL) == SOCKET_ERROR && WSAGetLastError() != WSA_IO_PENDING)
     {
         return ErrorCode::WSA_SEND_FAIL;
     }
@@ -189,6 +191,7 @@ void IOCPServer::WorkerThread()
         else if (overlapped_data->io_operation == IOOperation::SEND)
         {
             std::cout << "Asynchronous send complete" << std::endl;
+            delete overlapped_data;
         }
         else
         {
