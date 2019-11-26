@@ -142,10 +142,34 @@ ErrorCode IOCPServer::AsyncSend(ClientInfo * client_info, char * buf, int size)
     send_overlapped_data->wsabuf.len = size;
     send_overlapped_data->wsabuf.buf = send_overlapped_data->buf;
     send_overlapped_data->io_operation = IOOperation::SEND;
-        
-    if(WSASend(client_info->client_socket, &send_overlapped_data->wsabuf, 1, NULL, 0, (LPWSAOVERLAPPED) send_overlapped_data, NULL) == SOCKET_ERROR && WSAGetLastError() != WSA_IO_PENDING)
+
+    if(client_info->send_queue.size() < MAX_SEND_QUEUE_LENGTH)
     {
-        return ErrorCode::WSA_SEND_FAIL;
+        boost::unique_lock<boost::mutex> lock(mutexes_[client_info->client_index]);
+        client_info->send_queue.push_back(send_overlapped_data);
+        lock.unlock();
+    }
+    else
+    {
+        for(int i = 0; i < client_info->send_queue.size(); ++i)
+        {
+            delete client_info->send_queue[i];
+        }
+
+        CloseSocket(client_info);
+    }
+
+    if(client_info->send_queue.size() == 1)
+    {
+        boost::unique_lock<boost::mutex> lock(mutexes_[client_info->client_index]);
+        auto overlapped_data = client_info->send_queue.front();
+        client_info->send_queue.pop_front();
+        lock.unlock();
+
+        if(WSASend(client_info->client_socket, &overlapped_data->wsabuf, 1, NULL, 0, (LPWSAOVERLAPPED) overlapped_data, NULL) == SOCKET_ERROR && WSAGetLastError() != WSA_IO_PENDING)
+        {
+            return ErrorCode::WSA_SEND_FAIL;
+        }
     }
 
     return ErrorCode::NONE;
@@ -168,6 +192,11 @@ void IOCPServer::WorkerThread()
     {
         if(!GetQueuedCompletionStatus(iocp_handle_, &bytes, (PULONG_PTR) &client_info, (LPOVERLAPPED *) &overlapped_data, INFINITE))
         {
+            if(overlapped_data->io_operation == IOOperation::SEND)
+            {
+                delete overlapped_data;
+            }
+
             CloseSocket(client_info);
             continue;
         }
@@ -180,18 +209,28 @@ void IOCPServer::WorkerThread()
                 continue;
             }
 
-            OnReceive(client_info->client_index, client_info->recv_overlapped_data.buf, bytes);
+            char * buf = new char[bytes];
+            memcpy(buf, client_info->recv_overlapped_data.buf, bytes);
 
-            if(AsyncRecv(client_info) == ErrorCode::WSA_RECV_FAIL)
-            {
-                continue;
-            }
+            OnReceive(client_info->client_index, buf, bytes);
+
+            AsyncRecv(client_info);
 
         }
         else if (overlapped_data->io_operation == IOOperation::SEND)
         {
             std::cout << "Asynchronous send complete" << std::endl;
             delete overlapped_data;
+
+            boost::unique_lock<boost::mutex> lock(mutexes_[client_info->client_index]);
+            if(!client_info->send_queue.empty())
+            {
+                auto send_overlapped_data = client_info->send_queue.front();
+                client_info->send_queue.pop_front();
+                lock.unlock();
+
+                WSASend(client_info->client_socket, &send_overlapped_data->wsabuf, 1, NULL, 0, (LPWSAOVERLAPPED) send_overlapped_data, NULL);
+            }
         }
         else
         {

@@ -3,6 +3,7 @@
 
 #include <WinSock2.h>
 #include <vector>
+#include <deque>
 #include <boost\thread.hpp>
 
 #include "Config.h"
@@ -26,6 +27,7 @@ struct ClientInfo
     SOCKET client_socket;
     SOCKADDR_IN client_addr;
     OverlappedData recv_overlapped_data;
+    std::deque<OverlappedData *> send_queue;
     int client_index;
 };
 
@@ -59,4 +61,5 @@ private:
 
     std::vector<ClientInfo> client_infos_;
     std::vector<boost::thread> worker_threads_;
+    boost::mutex mutexes_[MAX_CLIENTS];
 };

@@ -41,6 +41,8 @@ void PacketManager::ProcessPacket()
             }
 
             (this->*FuncList_[static_cast<int>(packet_info.packet_id)])(packet_info);
+
+            delete packet_info.buf;
         }
     }
 }

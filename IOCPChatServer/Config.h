@@ -7,3 +7,4 @@ const unsigned short PACKET_HEADER_SIZE = sizeof(PacketHeader);
 
 const unsigned int MAX_CLIENTS = 100;
 const unsigned int MAX_BUFFER = 1024;
+const unsigned int MAX_SEND_QUEUE_LENGTH = 100;
