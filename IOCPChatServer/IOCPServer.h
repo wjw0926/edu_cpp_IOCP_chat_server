@@ -29,6 +29,7 @@ struct ClientInfo
     OverlappedData recv_overlapped_data;
     std::deque<OverlappedData *> send_queue;
     int client_index;
+    bool sending;
 };
 
 class IOCPServer
@@ -45,15 +46,16 @@ protected:
     virtual void OnClose(int client_index) {};
     virtual void OnReceive(int client_index, char * buf, int size) {};
 
-    ErrorCode AsyncSend(int client_index, char * buf, int size);
+    void AsyncSend(int client_index, char * buf, int size);
 
 private:
     ClientInfo * GetVacantClientInfo();
 
     ErrorCode AsyncRecv(ClientInfo * client_info);
-    ErrorCode AsyncSend(ClientInfo * client_info, char * buf, int size);
+    void AsyncSend(ClientInfo * client_info, char * buf, int size);
 
     void WorkerThread();
+    void SendThread();
     void CloseSocket(ClientInfo * client_info);
 
     SOCKET server_socket_;
@@ -61,5 +63,6 @@ private:
 
     std::vector<ClientInfo> client_infos_;
     std::vector<boost::thread> worker_threads_;
+    boost::thread send_thread_;
     boost::mutex mutexes_[MAX_CLIENTS];
 };

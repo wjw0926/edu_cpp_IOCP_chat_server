@@ -51,6 +51,7 @@ ErrorCode IOCPServer::StartServer()
         ClientInfo client_info;
         client_info.client_socket = INVALID_SOCKET;
         client_info.client_index = i;
+        client_info.sending = false;
         client_infos_.push_back(client_info);
     }
 
@@ -63,6 +64,8 @@ ErrorCode IOCPServer::StartServer()
     {
         worker_threads_.emplace_back([this]() { WorkerThread(); });
     }
+
+    send_thread_ = boost::thread([this]() { SendThread(); });
 
     std::cout << "Server start..." << std::endl;
 
@@ -133,7 +136,7 @@ ErrorCode IOCPServer::AsyncRecv(ClientInfo * client_info)
     return ErrorCode::NONE;
 }
 
-ErrorCode IOCPServer::AsyncSend(ClientInfo * client_info, char * buf, int size)
+void IOCPServer::AsyncSend(ClientInfo * client_info, char * buf, int size)
 {
     OverlappedData * send_overlapped_data = new OverlappedData;
 
@@ -143,9 +146,9 @@ ErrorCode IOCPServer::AsyncSend(ClientInfo * client_info, char * buf, int size)
     send_overlapped_data->wsabuf.buf = send_overlapped_data->buf;
     send_overlapped_data->io_operation = IOOperation::SEND;
 
+    boost::unique_lock<boost::mutex> lock(mutexes_[client_info->client_index]);
     if(client_info->send_queue.size() < MAX_SEND_QUEUE_LENGTH)
     {
-        boost::unique_lock<boost::mutex> lock(mutexes_[client_info->client_index]);
         client_info->send_queue.push_back(send_overlapped_data);
         lock.unlock();
     }
@@ -155,31 +158,17 @@ ErrorCode IOCPServer::AsyncSend(ClientInfo * client_info, char * buf, int size)
         {
             delete client_info->send_queue[i];
         }
+        lock.unlock();
 
         CloseSocket(client_info);
     }
-
-    if(client_info->send_queue.size() == 1)
-    {
-        boost::unique_lock<boost::mutex> lock(mutexes_[client_info->client_index]);
-        auto overlapped_data = client_info->send_queue.front();
-        client_info->send_queue.pop_front();
-        lock.unlock();
-
-        if(WSASend(client_info->client_socket, &overlapped_data->wsabuf, 1, NULL, 0, (LPWSAOVERLAPPED) overlapped_data, NULL) == SOCKET_ERROR && WSAGetLastError() != WSA_IO_PENDING)
-        {
-            return ErrorCode::WSA_SEND_FAIL;
-        }
-    }
-
-    return ErrorCode::NONE;
 }
 
-ErrorCode IOCPServer::AsyncSend(int client_index, char * buf, int size)
+void IOCPServer::AsyncSend(int client_index, char * buf, int size)
 {
-    auto client_info = client_infos_.at(client_index);
+    ClientInfo * client_info = &client_infos_.at(client_index);
 
-    return AsyncSend(&client_info, buf, size);
+    AsyncSend(client_info, buf, size);
 }
 
 void IOCPServer::WorkerThread()
@@ -220,22 +209,38 @@ void IOCPServer::WorkerThread()
         else if (overlapped_data->io_operation == IOOperation::SEND)
         {
             std::cout << "Asynchronous send complete" << std::endl;
+            client_info->sending = false;
             delete overlapped_data;
-
-            boost::unique_lock<boost::mutex> lock(mutexes_[client_info->client_index]);
-            if(!client_info->send_queue.empty())
-            {
-                auto send_overlapped_data = client_info->send_queue.front();
-                client_info->send_queue.pop_front();
-                lock.unlock();
-
-                WSASend(client_info->client_socket, &send_overlapped_data->wsabuf, 1, NULL, 0, (LPWSAOVERLAPPED) send_overlapped_data, NULL);
-            }
         }
         else
         {
             std::cout << "Error: invalid IO operation" << std::endl;
         }
+    }
+}
+
+void IOCPServer::SendThread()
+{
+    while(1)
+    {
+        for(int i = 0; i < MAX_CLIENTS; ++i)
+        {
+            if(client_infos_[i].client_socket != INVALID_SOCKET && !client_infos_[i].sending)
+            {
+                boost::unique_lock<boost::mutex> lock(mutexes_[client_infos_[i].client_index]);
+                if(!client_infos_[i].send_queue.empty())
+                {
+                    auto send_overlapped_data = client_infos_[i].send_queue.front();
+                    client_infos_[i].send_queue.pop_front();
+
+                    WSASend(client_infos_[i].client_socket, &send_overlapped_data->wsabuf, 1, NULL, 0, (LPWSAOVERLAPPED) send_overlapped_data, NULL);
+                    client_infos_[i].sending = true;
+                }
+                lock.unlock();
+            }
+        }
+
+        Sleep(10);
     }
 }
 
