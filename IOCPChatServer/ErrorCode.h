@@ -7,7 +7,7 @@ enum ErrorCode : unsigned short {
     WSA_SOCKET_FAIL = 11,
     BIND_FAIL = 12,
     LISTEN_FAIL = 13,
-    ACCPET_FAIL = 14,
+    ACCEPT_FAIL = 14,
 
     CREATE_IOCP_FAIL = 30,
     CONNECT_IOCP_FAIL = 31,
