@@ -1,7 +1,9 @@
 #pragma once
 #pragma comment(lib, "ws2_32")
+#pragma comment(lib, "mswsock.lib")
 
 #include <WinSock2.h>
+#include <mswsock.h>
 #include <vector>
 #include <deque>
 #include <boost\thread.hpp>
@@ -12,7 +14,9 @@
 const int BACKLOG = 5;
 const unsigned int MAX_WORKER_THREADS = 4;
 
-enum IOOperation { RECV, SEND };
+enum IOOperation { ACCEPT, RECV, SEND };
+
+struct ClientInfo;
 
 struct OverlappedData
 {
@@ -20,16 +24,19 @@ struct OverlappedData
     WSABUF wsabuf;
     char buf[MAX_BUFFER];
     IOOperation io_operation;
+    ClientInfo * client_info;
 };
 
 struct ClientInfo
 {
     SOCKET client_socket;
     SOCKADDR_IN client_addr;
+    OverlappedData accept_overlapped_data;
     OverlappedData recv_overlapped_data;
     std::deque<OverlappedData *> send_queue;
     int client_index;
     bool sending;
+    bool connecting;
 };
 
 class IOCPServer
@@ -49,14 +56,19 @@ protected:
     void AsyncSend(int client_index, char * buf, int size);
 
 private:
-    ClientInfo * GetVacantClientInfo();
+    ClientInfo * GetIdleClientInfo();
 
-    ErrorCode AsyncRecv(ClientInfo * client_info);
+    ErrorCode AsyncAccept(ClientInfo * client_info);
+    ErrorCode AsyncReceive(ClientInfo * client_info);
     void AsyncSend(ClientInfo * client_info, char * buf, int size);
 
     void WorkerThread();
     void SendThread();
     void CloseSocket(ClientInfo * client_info);
+
+    void ProcessAccept(ClientInfo * client_info);
+    void ProcessReceive(ClientInfo * client_info, int bytes);
+    void ProcessSend(ClientInfo * client_info);
 
     SOCKET server_socket_;
     HANDLE iocp_handle_;

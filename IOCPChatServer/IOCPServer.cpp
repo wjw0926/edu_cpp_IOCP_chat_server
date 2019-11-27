@@ -46,45 +46,67 @@ ErrorCode IOCPServer::InitSocket(unsigned short port)
 
 ErrorCode IOCPServer::StartServer()
 {
+    // Initialize client infos
     for(int i = 0; i < MAX_CLIENTS; ++i)
     {
         ClientInfo client_info;
         client_info.client_socket = INVALID_SOCKET;
         client_info.client_index = i;
         client_info.sending = false;
+        client_info.connecting = false;
         client_infos_.push_back(client_info);
     }
 
+    // Create IOCP
     if((iocp_handle_ = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, MAX_WORKER_THREADS)) == NULL)
     {
         return ErrorCode::CREATE_IOCP_FAIL;
     }
 
+    // Connect listen socket to IOCP
+    auto iocp_handle = CreateIoCompletionPort((HANDLE) server_socket_, iocp_handle_, 0, 0);
+
+    if(iocp_handle == NULL || iocp_handle != iocp_handle_)
+    {
+        closesocket(server_socket_);
+        return ErrorCode::CONNECT_IOCP_FAIL;
+    }
+
+    // Create worker threads
     for(int i = 0; i < MAX_WORKER_THREADS; ++i)
     {
         worker_threads_.emplace_back([this]() { WorkerThread(); });
     }
 
+    // Create send thread
     send_thread_ = boost::thread([this]() { SendThread(); });
 
     std::cout << "Server start..." << std::endl;
 
     while(1)
     {
-        auto client_info = GetVacantClientInfo();
+        // Get idle client info
+        auto client_info = GetIdleClientInfo();
 
         if(client_info == nullptr)
         {
-            return ErrorCode::FULL_CLIENTS;
+            continue;
         }
 
-        int client_addr_len = sizeof(client_info->client_addr);
-
-        if((client_info->client_socket = accept(server_socket_, (SOCKADDR *) &client_info->client_addr, &client_addr_len)) == INVALID_SOCKET)
+        // Create client socket
+        if((client_info->client_socket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, NULL, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         {
-            return ErrorCode::ACCPET_FAIL;
+            return ErrorCode::WSA_SOCKET_FAIL;
         }
 
+        // Call asynchronous accept
+        if(AsyncAccept(client_info) == ErrorCode::ACCEPT_FAIL)
+        {
+            closesocket(client_info->client_socket);
+            return ErrorCode::ACCEPT_FAIL;
+        }
+
+        // Connect client socket to IOCP
         auto iocp_handle = CreateIoCompletionPort((HANDLE) client_info->client_socket, iocp_handle_, (ULONG_PTR) client_info, 0);
 
         if(iocp_handle == NULL || iocp_handle != iocp_handle_)
@@ -92,24 +114,17 @@ ErrorCode IOCPServer::StartServer()
             return ErrorCode::CONNECT_IOCP_FAIL;
         }
 
-        std::cout << "Accept client..." << std::endl;
-
-        OnAccept(client_info->client_index);
-
-        if(AsyncRecv(client_info) == ErrorCode::WSA_RECV_FAIL)
-        {
-            return ErrorCode::WSA_RECV_FAIL;
-        }
+        std::cout << "Ready to accept clients..." << std::endl;
     }
 
     return ErrorCode::NONE;
 }
 
-ClientInfo * IOCPServer::GetVacantClientInfo()
+ClientInfo * IOCPServer::GetIdleClientInfo()
 {
     for(int i = 0; i < MAX_CLIENTS; ++i)
     {
-        if(client_infos_.at(i).client_socket == INVALID_SOCKET)
+        if(!client_infos_.at(i).connecting)
         {
             return &client_infos_.at(i);
         }
@@ -118,7 +133,31 @@ ClientInfo * IOCPServer::GetVacantClientInfo()
     return nullptr;
 }
 
-ErrorCode IOCPServer::AsyncRecv(ClientInfo * client_info)
+ErrorCode IOCPServer::AsyncAccept(ClientInfo * client_info)
+{
+    memset(&client_info->accept_overlapped_data.overlapped, 0, sizeof(WSAOVERLAPPED));
+    client_info->accept_overlapped_data.client_info = client_info;
+    client_info->accept_overlapped_data.io_operation = IOOperation::ACCEPT;
+
+    if (!AcceptEx(server_socket_,
+                  client_info->client_socket,
+                  (PVOID) &client_info->accept_overlapped_data.buf,
+                  0,
+                  sizeof(SOCKADDR_IN) + 16,
+                  sizeof(SOCKADDR_IN) + 16,
+                  NULL,
+                  (LPOVERLAPPED) &client_info->accept_overlapped_data)
+        && WSAGetLastError() != WSA_IO_PENDING)
+    {
+        return ErrorCode::ACCEPT_FAIL;
+    }
+
+    client_info->connecting = true;
+
+    return ErrorCode::NONE;
+}
+
+ErrorCode IOCPServer::AsyncReceive(ClientInfo * client_info)
 {
     DWORD recv_bytes = 0;
     DWORD flags = 0;
@@ -190,31 +229,20 @@ void IOCPServer::WorkerThread()
             continue;
         }
 
-        if(overlapped_data->io_operation == IOOperation::RECV)
+        switch(overlapped_data->io_operation)
         {
-            if(bytes == 0)
-            {
-                CloseSocket(client_info);
-                continue;
-            }
-
-            char * buf = new char[bytes];
-            memcpy(buf, client_info->recv_overlapped_data.buf, bytes);
-
-            OnReceive(client_info->client_index, buf, bytes);
-
-            AsyncRecv(client_info);
-
-        }
-        else if (overlapped_data->io_operation == IOOperation::SEND)
-        {
-            std::cout << "Asynchronous send complete" << std::endl;
-            client_info->sending = false;
-            delete overlapped_data;
-        }
-        else
-        {
-            std::cout << "Error: invalid IO operation" << std::endl;
+            case IOOperation::ACCEPT:
+                ProcessAccept(overlapped_data->client_info);
+                break;
+            case IOOperation::RECV:
+                ProcessReceive(client_info, bytes);
+                break;
+            case IOOperation::SEND:
+                ProcessSend(client_info);
+                delete overlapped_data;
+                break;
+            default:
+                std::cout << "Error: invalid IO operation" << std::endl;
         }
     }
 }
@@ -252,5 +280,39 @@ void IOCPServer::CloseSocket(ClientInfo * client_info)
 
     shutdown(client_info->client_socket, SD_BOTH);
     closesocket(client_info->client_socket);
-    client_info->client_socket = INVALID_SOCKET;
+
+    client_info->sending = false;
+    client_info->connecting = false;
+}
+
+void IOCPServer::ProcessAccept(ClientInfo * client_info)
+{
+    std::cout << "Accept client..." << std::endl;
+
+    OnAccept(client_info->client_index);
+
+    AsyncReceive(client_info);
+}
+
+void IOCPServer::ProcessReceive(ClientInfo * client_info, int bytes)
+{
+    if(bytes == 0)
+    {
+        CloseSocket(client_info);
+        return;
+    }
+
+    char * buf = new char[bytes];
+    memcpy(buf, client_info->recv_overlapped_data.buf, bytes);
+
+    OnReceive(client_info->client_index, buf, bytes);
+
+    AsyncReceive(client_info);
+}
+
+void IOCPServer::ProcessSend(ClientInfo * client_info)
+{
+    std::cout << "Asynchronous send complete" << std::endl;
+
+    client_info->sending = false;
 }
