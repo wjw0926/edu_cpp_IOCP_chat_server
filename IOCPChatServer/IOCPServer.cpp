@@ -106,14 +106,6 @@ ErrorCode IOCPServer::StartServer()
             return ErrorCode::ACCEPT_FAIL;
         }
 
-        // Connect client socket to IOCP
-        auto iocp_handle = CreateIoCompletionPort((HANDLE) client_info->client_socket, iocp_handle_, (ULONG_PTR) client_info, 0);
-
-        if(iocp_handle == NULL || iocp_handle != iocp_handle_)
-        {
-            return ErrorCode::CONNECT_IOCP_FAIL;
-        }
-
         std::cout << "Ready to accept clients..." << std::endl;
     }
 
@@ -193,21 +185,13 @@ void IOCPServer::AsyncSend(ClientInfo * client_info, char * buf, int size)
     }
     else
     {
-        for(int i = 0; i < client_info->send_queue.size(); ++i)
-        {
-            delete client_info->send_queue[i];
-        }
-        lock.unlock();
-
         CloseSocket(client_info);
     }
 }
 
 void IOCPServer::AsyncSend(int client_index, char * buf, int size)
 {
-    ClientInfo * client_info = &client_infos_.at(client_index);
-
-    AsyncSend(client_info, buf, size);
+    AsyncSend(&client_infos_.at(client_index), buf, size);
 }
 
 void IOCPServer::WorkerThread()
@@ -253,13 +237,12 @@ void IOCPServer::SendThread()
     {
         for(int i = 0; i < MAX_CLIENTS; ++i)
         {
-            if(client_infos_[i].client_socket != INVALID_SOCKET && !client_infos_[i].sending)
+            if(client_infos_[i].client_socket != INVALID_SOCKET)
             {
                 boost::unique_lock<boost::mutex> lock(mutexes_[client_infos_[i].client_index]);
-                if(!client_infos_[i].send_queue.empty())
+                if(!client_infos_[i].send_queue.empty() && !client_infos_[i].sending)
                 {
                     auto send_overlapped_data = client_infos_[i].send_queue.front();
-                    client_infos_[i].send_queue.pop_front();
 
                     WSASend(client_infos_[i].client_socket, &send_overlapped_data->wsabuf, 1, NULL, 0, (LPWSAOVERLAPPED) send_overlapped_data, NULL);
                     client_infos_[i].sending = true;
@@ -278,6 +261,13 @@ void IOCPServer::CloseSocket(ClientInfo * client_info)
 
     OnClose(client_info->client_index);
 
+    boost::unique_lock<boost::mutex> lock(mutexes_[client_info->client_index]);
+    for(int i = 0; i < client_info->send_queue.size(); ++i)
+    {
+        delete client_info->send_queue[i];
+    }
+    lock.unlock();
+
     shutdown(client_info->client_socket, SD_BOTH);
     closesocket(client_info->client_socket);
 
@@ -290,6 +280,15 @@ void IOCPServer::ProcessAccept(ClientInfo * client_info)
     std::cout << "Accept client..." << std::endl;
 
     OnAccept(client_info->client_index);
+
+    // Connect client socket to IOCP
+    auto iocp_handle = CreateIoCompletionPort((HANDLE) client_info->client_socket, iocp_handle_, (ULONG_PTR) client_info, 0);
+
+    if(iocp_handle == NULL || iocp_handle != iocp_handle_)
+    {
+        CloseSocket(client_info);
+        return;
+    }
 
     AsyncReceive(client_info);
 }
@@ -314,5 +313,8 @@ void IOCPServer::ProcessSend(ClientInfo * client_info)
 {
     std::cout << "Asynchronous send complete" << std::endl;
 
+    boost::unique_lock<boost::mutex> lock(mutexes_[client_info->client_index]);
+    client_info->send_queue.pop_front();
     client_info->sending = false;
+    lock.unlock();
 }
