@@ -15,5 +15,6 @@ enum ErrorCode : unsigned short {
     WSA_RECV_FAIL = 40,
     WSA_SEND_FAIL = 41,
 
-    FULL_CLIENTS = 50
+    FULL_CLIENTS = 50,
+    FULL_SEND_QUEUE = 51
 };
