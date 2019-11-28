@@ -151,11 +151,6 @@ ErrorCode IOCPServer::AsyncSend(ClientInfo * client_info, char * buf, int size)
     }
     else
     {
-        for(int i = 0; i < client_info->send_queue.size(); ++i)
-        {
-            delete client_info->send_queue[i];
-        }
-
         CloseSocket(client_info);
         return ErrorCode::FULL_SEND_QUEUE;
     }
@@ -243,6 +238,13 @@ void IOCPServer::CloseSocket(ClientInfo * client_info)
     std::cout << "Closing client socket..." << std::endl;
 
     OnClose(client_info->client_index);
+
+    boost::unique_lock<boost::mutex> lock(mutexes_[client_info->client_index]);
+    for(int i = 0; i < client_info->send_queue.size(); ++i)
+    {
+        delete client_info->send_queue[i];
+    }
+    lock.unlock();
 
     shutdown(client_info->client_socket, SD_BOTH);
     closesocket(client_info->client_socket);
