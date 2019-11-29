@@ -41,17 +41,22 @@ void ChatServer::OnClose(int client_index)
 
 void ChatServer::OnReceive(int client_index, char * buf, int size)
 {
-    /*
     auto header = reinterpret_cast<PacketHeader *>(buf);
 
     if (header->total_size != size) {
-        std::cout << "Error: " << std::endl;
+        delete buf;
         return;
     }
 
-    packet_manager_.AddPacketQueue(client_index, header->packet_id, size - PACKET_HEADER_SIZE, &buf[PACKET_HEADER_SIZE]);
-    */
+    PacketID packet_id = header->packet_id;
+
+    char * body = new char[size - PACKET_HEADER_SIZE];
+    memcpy(body, &buf[PACKET_HEADER_SIZE], size - PACKET_HEADER_SIZE);
+
+    delete buf;
+
+    packet_manager_.AddPacketQueue(client_index, packet_id, size - PACKET_HEADER_SIZE, body);
 
     // For echo
-    packet_manager_.AddPacketQueue(client_index, PacketID::ECHO_REQ, size, buf);
+    //packet_manager_.AddPacketQueue(client_index, PacketID::ECHO_REQ, size, buf);
 }
